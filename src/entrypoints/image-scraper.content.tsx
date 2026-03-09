@@ -21,7 +21,7 @@ export default defineContentScript({
       // ignore
     }
 
-    await createShadowRootUi(ctx, {
+    const ui = await createShadowRootUi(ctx, {
       name: 'fast-save-image-batch-ui',
       position: 'inline',
       anchor: 'html',
@@ -52,6 +52,8 @@ export default defineContentScript({
         mounted.modal.destroy();
       },
     });
+
+    ui.mount();
 
     if (settings.hoverOverlayEnabled) {
       injectHoverSaveButtons();

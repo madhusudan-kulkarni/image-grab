@@ -27,7 +27,7 @@ export default defineBackground(() => {
     }
 
     if (info.menuItemId === 'fast-save-image-batch' && tab?.id) {
-      await browser.tabs.sendMessage(tab.id, { type: 'open-batch-modal' });
+      await openBatchModalOnTab(tab.id);
     }
   });
 
@@ -36,6 +36,9 @@ export default defineBackground(() => {
       await downloadImage(message.src);
     } else if (message.type === 'download-batch') {
       await downloadBatch(message.images);
+    } else if (message.type === 'open-batch-modal' && typeof message.tabId === 'number') {
+      await openBatchModalOnTab(message.tabId);
+      return { ok: true };
     } else if (message.type === 'get-settings') {
       return {
         filenameTemplate: await settings.filenameTemplate.getValue(),
@@ -77,7 +80,7 @@ async function downloadBatch(images: { src: string }[]): Promise<void> {
   const domain = extractDomain(images[0]?.src || '');
   const timestamp = getTimestamp();
 
-  const folderPrefix = batchSubfolder ? `FastSaveImages/${domain}/${timestamp}/` : '';
+  const folderPrefix = batchSubfolder ? `ImageGrab/${domain}/${timestamp}/` : '';
   
   for (let i = 0; i < images.length; i++) {
     const src = images[i].src;
@@ -92,4 +95,20 @@ async function downloadBatch(images: { src: string }[]): Promise<void> {
       saveAs: false,
     });
   }
+}
+
+async function openBatchModalOnTab(tabId: number): Promise<void> {
+  try {
+    await browser.tabs.sendMessage(tabId, { type: 'open-batch-modal' });
+    return;
+  } catch {
+    // Content script may not be loaded on tabs opened before install/update.
+  }
+
+  await browser.scripting.executeScript({
+    target: { tabId },
+    files: ['content-scripts/image-scraper.js'],
+  });
+
+  await browser.tabs.sendMessage(tabId, { type: 'open-batch-modal' });
 }

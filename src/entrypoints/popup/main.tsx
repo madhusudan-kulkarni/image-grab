@@ -25,7 +25,7 @@ async function mountPopup(container: HTMLElement) {
   });
 
   const title = document.createElement('h1');
-  title.textContent = 'Fast Save Image';
+  title.textContent = 'ImageGrab';
   Object.assign(title.style, {
     margin: '0 0 16px 0',
     fontSize: '18px',
@@ -109,15 +109,33 @@ async function mountPopup(container: HTMLElement) {
   const batchButton = document.createElement('button');
   batchButton.textContent = 'Open Batch Downloader';
   Object.assign(batchButton.style, buttonStyle('#0f172a'));
+
+  const statusText = document.createElement('p');
+  statusText.textContent = '';
+  Object.assign(statusText.style, {
+    margin: '0',
+    minHeight: '16px',
+    fontSize: '12px',
+    color: '#dc2626',
+  });
+
   batchButton.addEventListener('click', async () => {
+    statusText.textContent = '';
     const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
-    if (tab?.id) {
-      await browser.tabs.sendMessage(tab.id, { type: 'open-batch-modal' });
+    if (!tab?.id) {
+      statusText.textContent = 'No active tab found.';
+      return;
+    }
+
+    try {
+      await browser.runtime.sendMessage({ type: 'open-batch-modal', tabId: tab.id });
       window.close();
+    } catch {
+      statusText.textContent = 'Batch downloader is unavailable on this page.';
     }
   });
 
-  form.append(templateWrap, hoverRow, subfolderRow, saveButton, batchButton);
+  form.append(templateWrap, hoverRow, subfolderRow, saveButton, batchButton, statusText);
   app.append(title, form);
   container.appendChild(app);
 }
