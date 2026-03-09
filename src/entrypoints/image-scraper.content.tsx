@@ -1,6 +1,3 @@
-import { createRoot } from 'react-dom/client';
-import BatchModal from '../components/BatchModal';
-
 type ScrapedImage = {
   src: string;
   originalName: string;
@@ -24,54 +21,285 @@ export default defineContentScript({
       // ignore
     }
 
-    const ui = await createShadowRootUi(ctx, {
+    await createShadowRootUi(ctx, {
       name: 'fast-save-image-batch-ui',
       position: 'inline',
       anchor: 'html',
       onMount: (container) => {
-        const root = createRoot(container);
+        const modal = createBatchModal(container, async (selected) => {
+          await browser.runtime.sendMessage({ type: 'download-batch', images: selected });
+          modal.close();
+        });
 
-        const render = (isOpen: boolean) => {
-          const images = isOpen ? scrapeImages() : [];
-
-          root.render(
-            <BatchModal
-              isOpen={isOpen}
-              images={images}
-              onClose={() => render(false)}
-              onDownloadSelected={async (selected) => {
-                await browser.runtime.sendMessage({ type: 'download-batch', images: selected });
-                render(false);
-              }}
-            />,
-          );
-        };
-
-        render(false);
-
-        browser.runtime.onMessage.addListener((message) => {
+        const onMessage = (message: { type?: string }) => {
           if (message.type === 'open-batch-modal') {
-            render(true);
+            modal.open(scrapeImages());
           }
           if (message.type === 'settings-updated') {
             browser.runtime.sendMessage({ type: 'get-settings' }).then((next) => {
               settings.hoverOverlayEnabled = Boolean(next.hoverOverlayEnabled);
             });
           }
-        });
+        };
 
-        return root;
+        browser.runtime.onMessage.addListener(onMessage);
+
+        return { modal, onMessage };
       },
-      onRemove: (root) => root?.unmount(),
+      onRemove: (mounted) => {
+        if (!mounted) return;
+        browser.runtime.onMessage.removeListener(mounted.onMessage);
+        mounted.modal.destroy();
+      },
     });
 
     if (settings.hoverOverlayEnabled) {
       injectHoverSaveButtons();
     }
 
-    ctx.addEventListener('unload', () => ui.hide());
   },
 });
+
+function createBatchModal(root: HTMLElement, onDownloadSelected: (images: ScrapedImage[]) => Promise<void>) {
+  const backdrop = document.createElement('div');
+  const card = document.createElement('div');
+  const title = document.createElement('h2');
+  const closeBtn = document.createElement('button');
+  const selectAllBtn = document.createElement('button');
+  const selectedInfo = document.createElement('span');
+  const gridWrap = document.createElement('div');
+  const grid = document.createElement('div');
+  const empty = document.createElement('div');
+  const cancelBtn = document.createElement('button');
+  const downloadBtn = document.createElement('button');
+
+  let images: ScrapedImage[] = [];
+  let selected = new Set<string>();
+  let downloading = false;
+
+  Object.assign(backdrop.style, {
+    position: 'fixed',
+    inset: '0',
+    background: 'rgba(0, 0, 0, 0.62)',
+    display: 'none',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: '2147483647',
+    fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+  });
+
+  Object.assign(card.style, {
+    width: '92%',
+    maxWidth: '900px',
+    maxHeight: '88vh',
+    background: '#fff',
+    borderRadius: '12px',
+    overflow: 'hidden',
+    display: 'flex',
+    flexDirection: 'column',
+  });
+
+  const headerRow = document.createElement('div');
+  Object.assign(headerRow.style, {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '16px 20px',
+    borderBottom: '1px solid #e5e7eb',
+  });
+
+  Object.assign(title.style, { margin: '0', fontSize: '18px', color: '#111827' });
+  Object.assign(closeBtn.style, {
+    background: 'transparent',
+    border: '0',
+    fontSize: '24px',
+    cursor: 'pointer',
+    color: '#6b7280',
+  });
+  closeBtn.textContent = 'x';
+
+  const controlRow = document.createElement('div');
+  Object.assign(controlRow.style, {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '10px 20px',
+    borderBottom: '1px solid #e5e7eb',
+  });
+
+  Object.assign(selectAllBtn.style, {
+    background: 'transparent',
+    border: '0',
+    cursor: 'pointer',
+    color: '#1d4ed8',
+    fontWeight: '600',
+  });
+  Object.assign(selectedInfo.style, { color: '#6b7280', fontSize: '13px' });
+
+  Object.assign(gridWrap.style, {
+    padding: '14px 20px',
+    overflow: 'auto',
+    flex: '1',
+  });
+
+  Object.assign(empty.style, {
+    textAlign: 'center',
+    color: '#6b7280',
+    padding: '28px 0',
+  });
+  empty.textContent = 'No images found on this page.';
+
+  Object.assign(grid.style, {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(148px, 1fr))',
+    gap: '12px',
+  });
+
+  const footerRow = document.createElement('div');
+  Object.assign(footerRow.style, {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: '10px',
+    borderTop: '1px solid #e5e7eb',
+    padding: '12px 20px',
+  });
+
+  Object.assign(cancelBtn.style, {
+    border: '1px solid #cbd5e1',
+    background: '#fff',
+    borderRadius: '6px',
+    padding: '8px 14px',
+    cursor: 'pointer',
+  });
+  cancelBtn.textContent = 'Cancel';
+
+  Object.assign(downloadBtn.style, {
+    border: '0',
+    background: '#2563eb',
+    color: '#fff',
+    borderRadius: '6px',
+    padding: '8px 14px',
+    cursor: 'pointer',
+  });
+
+  const close = () => {
+    backdrop.style.display = 'none';
+  };
+
+  const refreshHeader = () => {
+    title.textContent = `Batch Download Images (${images.length})`;
+    selectedInfo.textContent = `${selected.size} selected`;
+    selectAllBtn.textContent = selected.size === images.length ? 'Select None' : 'Select All';
+    downloadBtn.textContent = downloading ? 'Downloading...' : `Download ${selected.size}`;
+    downloadBtn.disabled = selected.size === 0 || downloading;
+  };
+
+  const toggleOne = (src: string) => {
+    if (selected.has(src)) {
+      selected.delete(src);
+    } else {
+      selected.add(src);
+    }
+    renderGrid();
+  };
+
+  const renderGrid = () => {
+    grid.replaceChildren();
+    if (!images.length) {
+      gridWrap.replaceChildren(empty);
+      refreshHeader();
+      return;
+    }
+
+    for (const img of images) {
+      const checked = selected.has(img.src);
+      const tile = document.createElement('label');
+      Object.assign(tile.style, {
+        border: `2px solid ${checked ? '#2563eb' : '#d1d5db'}`,
+        borderRadius: '8px',
+        padding: '6px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '6px',
+        cursor: 'pointer',
+      });
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = checked;
+      checkbox.addEventListener('change', () => toggleOne(img.src));
+
+      const thumb = document.createElement('img');
+      thumb.src = img.src;
+      thumb.alt = img.originalName;
+      Object.assign(thumb.style, {
+        width: '100%',
+        height: '110px',
+        objectFit: 'cover',
+        borderRadius: '6px',
+      });
+
+      const dim = document.createElement('span');
+      dim.textContent = `${img.width}x${img.height}`;
+      Object.assign(dim.style, { fontSize: '11px', color: '#6b7280' });
+
+      tile.append(checkbox, thumb, dim);
+      grid.appendChild(tile);
+    }
+
+    gridWrap.replaceChildren(grid);
+    refreshHeader();
+  };
+
+  const open = (nextImages: ScrapedImage[]) => {
+    images = nextImages;
+    selected = new Set(images.map((img) => img.src));
+    downloading = false;
+    backdrop.style.display = 'flex';
+    renderGrid();
+  };
+
+  closeBtn.addEventListener('click', close);
+  cancelBtn.addEventListener('click', close);
+  backdrop.addEventListener('click', (event) => {
+    if (event.target === backdrop) close();
+  });
+
+  selectAllBtn.addEventListener('click', () => {
+    if (selected.size === images.length) {
+      selected = new Set();
+    } else {
+      selected = new Set(images.map((img) => img.src));
+    }
+    renderGrid();
+  });
+
+  downloadBtn.addEventListener('click', async () => {
+    if (downloading || selected.size === 0) return;
+    downloading = true;
+    refreshHeader();
+    try {
+      const selectedImages = images.filter((img) => selected.has(img.src));
+      await onDownloadSelected(selectedImages);
+    } finally {
+      downloading = false;
+      refreshHeader();
+    }
+  });
+
+  headerRow.append(title, closeBtn);
+  controlRow.append(selectAllBtn, selectedInfo);
+  footerRow.append(cancelBtn, downloadBtn);
+  card.append(headerRow, controlRow, gridWrap, footerRow);
+  backdrop.appendChild(card);
+  root.appendChild(backdrop);
+
+  return {
+    open,
+    close,
+    destroy: () => backdrop.remove(),
+  };
+}
 
 function scrapeImages(): ScrapedImage[] {
   const results: ScrapedImage[] = [];
@@ -162,7 +390,7 @@ function injectHoverSaveButtons() {
     const btn = document.createElement('button');
     btn.className = 'fs-hover-btn';
     btn.title = 'Save Image';
-    btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>';
+    btn.appendChild(createDownloadIcon());
     btn.addEventListener('click', async (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -186,4 +414,15 @@ function injectHoverSaveButtons() {
   });
 
   observer.observe(document.documentElement, { childList: true, subtree: true });
+}
+
+function createDownloadIcon(): SVGSVGElement {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', 'M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z');
+
+  svg.appendChild(path);
+  return svg;
 }
